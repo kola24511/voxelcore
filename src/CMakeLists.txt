@@ -1,4 +1,4 @@
-project(VoxelEngineSrc)
+﻿project(VoxelEngineSrc)
 
 file(GLOB_RECURSE headers ${CMAKE_CURRENT_SOURCE_DIR}/*.hpp)
 file(GLOB_RECURSE sources ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
@@ -24,99 +24,90 @@ if(NOT APPLE)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    find_package(OpenAL CONFIG REQUIRED)
     find_package(vorbis REQUIRED)
+
+    # ❗ Ручная интеграция LuaJIT из локального vcpkg_installed
+    set(VCPKG_INSTALLED_PATH "${CMAKE_SOURCE_DIR}/build/vcpkg_installed/${VCPKG_TARGET_TRIPLET}")
+    set(LUAJIT_INCLUDE_DIR "${VCPKG_INSTALLED_PATH}/include/luajit")
+    set(LUAJIT_STATIC_LIB "${VCPKG_INSTALLED_PATH}/lib/luajit.lib")
+    set(LUAJIT_SHARED_LIB "${VCPKG_INSTALLED_PATH}/lib/lua51.lib")
+    set(LUAJIT_DLL       "${VCPKG_INSTALLED_PATH}/bin/lua51.dll")
+
+    if(NOT EXISTS "${LUAJIT_INCLUDE_DIR}/luajit.h")
+        message(FATAL_ERROR "LuaJIT header not found at: ${LUAJIT_INCLUDE_DIR}/luajit.h")
+    endif()
+
     if(VCPKG_TARGET_TRIPLET MATCHES "static")
         add_library(luajit STATIC IMPORTED)
-        set_target_properties(
-            luajit
-            PROPERTIES
-                IMPORTED_LOCATION
-                "$ENV{VCPKG_ROOT}/packages/luajit_${VCPKG_TARGET_TRIPLET}/lib/libluajit-5.1.a"
-                INTERFACE_INCLUDE_DIRECTORIES
-                "$ENV{VCPKG_ROOT}/packages/luajit_${VCPKG_TARGET_TRIPLET}/include/"
+        set_target_properties(luajit PROPERTIES
+            IMPORTED_LOCATION "${LUAJIT_STATIC_LIB}"
+            INTERFACE_INCLUDE_DIRECTORIES "${LUAJIT_INCLUDE_DIR}"
         )
     else()
         add_library(luajit SHARED IMPORTED)
-        set_target_properties(
-            luajit
-            PROPERTIES
-                IMPORTED_LOCATION
-                "$ENV{VCPKG_ROOT}/packages/luajit_${VCPKG_TARGET_TRIPLET}/bin/lua51.dll"
-                IMPORTED_IMPLIB
-                "$ENV{VCPKG_ROOT}/packages/luajit_${VCPKG_TARGET_TRIPLET}/lib/lua51.lib"
-                INTERFACE_INCLUDE_DIRECTORIES
-                "$ENV{VCPKG_ROOT}/packages/luajit_${VCPKG_TARGET_TRIPLET}/include/luajit"
+        set_target_properties(luajit PROPERTIES
+            IMPORTED_LOCATION "${LUAJIT_DLL}"
+            IMPORTED_IMPLIB   "${LUAJIT_SHARED_LIB}"
+            INTERFACE_INCLUDE_DIRECTORIES "${LUAJIT_INCLUDE_DIR}"
         )
     endif()
 
     add_library(luajit::luajit ALIAS luajit)
+
 else()
-    find_package(PkgConfig)
+    find_package(OpenAL REQUIRED)
+    find_package(PkgConfig REQUIRED)
 
     pkg_check_modules(luajit REQUIRED IMPORTED_TARGET luajit)
     pkg_check_modules(vorbis REQUIRED IMPORTED_TARGET vorbis)
     pkg_check_modules(vorbisfile REQUIRED IMPORTED_TARGET vorbisfile)
-    add_library(Vorbis::vorbis ALIAS PkgConfig::vorbis)
-    add_library(Vorbis::vorbisfile ALIAS PkgConfig::vorbisfile)
+
     add_library(luajit::luajit ALIAS PkgConfig::luajit)
+    add_library(vorbis ALIAS PkgConfig::vorbis)
+    add_library(vorbisfile ALIAS PkgConfig::vorbisfile)
 endif()
 
+# Инклуды
 target_include_directories(VoxelEngineSrc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Линковка
 target_link_libraries(
     VoxelEngineSrc
-    PRIVATE glfw
-            OpenGL::GL
-            GLEW::GLEW
-            ZLIB::ZLIB
-            PNG::PNG
-            CURL::libcurl
-            OpenAL::OpenAL
-            Vorbis::vorbis
-            Vorbis::vorbisfile
-            luajit::luajit
-    PUBLIC glm::glm # Need public for src/delegates.hpp, which including to
-                    # main.cpp
+    PRIVATE
+        glfw
+        OpenGL::GL
+        GLEW::GLEW
+        ZLIB::ZLIB
+        PNG::PNG
+        CURL::libcurl
+        OpenAL::OpenAL
+        vorbis
+        vorbisfile
+        luajit::luajit
+    PUBLIC
+        glm::glm
 )
 
+# Флаги компиляции
 target_compile_options(
     VoxelEngineSrc
-    PUBLIC $<$<CXX_COMPILER_ID:MSVC>:
-           /utf-8
-           /MP
-           /D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR
-           /W4
-           /wd4244 # conversion from 'a' to 'T', possible loss of data
-           /wd4267 # conversion from 'size_t' to 'int', possible loss of data
-           /wd4245 # conversion from 'int' to 'const size_t', signed/unsigned
-                   # mismatch
-           /wd4100 # unreferenced formal parameter
-           /wd4458 # declaration of 'var' hides class member
-           /wd4101 # 'var': unreferenced local variable
-           /wd4388 # 'token' : signed/unsigned mismatch
-           /wd4018 # '>': signed/unsigned mismatch
-           >
-           $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:
-           -Wall
-           -Wextra
-           # additional warnings
-           -Wformat-nonliteral
-           -Wcast-align
-           -Wpointer-arith
-           -Wundef
-           -Wwrite-strings
-           -Wno-unused-parameter
-           -Wno-sign-compare
-           -Wno-unknown-pragmas
-           >)
+    PUBLIC
+        $<$<CXX_COMPILER_ID:MSVC>:
+            /utf-8 /MP /D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR /W4
+            /wd4244 /wd4267 /wd4245 /wd4100 /wd4458 /wd4101 /wd4388 /wd4018
+        >
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:
+            -Wall -Wextra -Wformat-nonliteral -Wcast-align -Wpointer-arith
+            -Wundef -Wwrite-strings -Wno-unused-parameter -Wno-sign-compare
+            -Wno-unknown-pragmas
+        >
+)
 
+# Флаги линковки
 target_link_options(
     VoxelEngineSrc
     PUBLIC
-    $<$<CXX_COMPILER_ID:GNU>:
-    -no-pie
-    >
-    # Need for static compilation on Windows with clang TODO: Make single build
-    # on Windows to avoid dependence on combinations of platforms and compilers
-    # and make it independent
-    $<$<PLATFORM_ID:Windows>:$<$<CXX_COMPILER_ID:Clang>:-static>>)
+        $<$<CXX_COMPILER_ID:GNU>:-no-pie>
+        $<$<PLATFORM_ID:Windows>:$<$<CXX_COMPILER_ID:Clang>:-static>>
+)
