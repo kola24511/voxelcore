@@ -526,7 +526,7 @@ end
 -- Hide unsafe debug.* functions
 local removed_names = {
     "getregistry", "getupvalue", "setupvalue", "upvalueid", "upvaluejoin",
-    "sethook", "gethook", "getinfo"
+    "sethook", "gethook"
 }
 for i, name in ipairs(removed_names) do
     debug[name] = nil
