@@ -68,6 +68,8 @@ else()
     add_library(vorbisfile ALIAS PkgConfig::vorbisfile)
 endif()
 
+find_package(GameNetworkingSockets CONFIG REQUIRED)
+
 # Инклуды
 target_include_directories(VoxelEngineSrc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -85,6 +87,7 @@ target_link_libraries(
         vorbis
         vorbisfile
         luajit::luajit
+        GameNetworkingSockets::shared
     PUBLIC
         glm::glm
 )
