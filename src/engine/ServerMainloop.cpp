@@ -44,11 +44,19 @@ void ServerMainloop::run() {
     auto begin = system_clock::now();
     auto startupTime = begin;
 
-    while (process->isActive()) {
-        if (engine.isQuitSignal()) {
-            process->terminate();
-            logger.info() << "script has been terminated due to quit signal";
-            break;
+    while (!engine.isQuitSignal()) {
+        if (process) {
+            try {
+                if (process->isActive()) {
+                    process->update();
+                } else {
+                    process.reset();  // скрипт закончился — не трогаем больше
+                }
+            } catch (const std::exception& e) {
+                logger.error() << "coroutine crashed: " << e.what();
+                if (process) process->terminate();
+                process.reset();
+            }
         }
         if (coreParams.testMode) {
             time.step(delta);

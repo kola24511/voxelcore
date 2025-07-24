@@ -378,8 +378,16 @@ class SocketConnection : public Connection {
                 break;
             }
 
+            static constexpr size_t MAX_INBUF = 1 << 20;
+
             {
                 std::lock_guard<std::mutex> lock(mutex);
+                if (readBatch.size() + size > MAX_INBUF) {
+                    logger.warning()
+                        << "client " << to_string(addr)
+                        << " exceeded input buffer limit, dropping";
+                    break;  // выйдем из цикла - соединение закроется ниже
+                }
                 readBatch.insert(
                     readBatch.end(), buffer.data(), buffer.data() + size
                 );
@@ -444,29 +452,65 @@ public:
         readBatch.erase(readBatch.begin(), readBatch.begin() + size);
         return size;
     }
-
-    int send(const char* inBuffer, size_t length) override {
-        if (state == ConnectionState::CLOSED) return 0;
-        int len = sendsocket(descriptor, inBuffer, length, 0);
-        if (len == SOCKET_ERROR) {
-#ifdef _WIN32
-            int err = WSAGetLastError();
-            close();
-            throw std::runtime_error(
-                "Send failed [WSA=" + std::to_string(err) + "]"
-            );
-#else
-            int err = errno;
-            close();
-            throw std::runtime_error(
-                "Send failed [errno=" + std::to_string(err) +
-                "]: " + std::string(strerror(err))
-            );
-#endif
+    int SocketConnection::send(const char* inBuffer, size_t length) override {
+        if (state.load() != ConnectionState::CONNECTED) {
+            return -1;
         }
-        totalUpload += len;
-        return len;
+
+        size_t total = 0;
+        while (total < length) {
+            int flags = 0;
+#if !defined(_WIN32) && defined(MSG_NOSIGNAL)
+            flags = MSG_NOSIGNAL;
+#endif
+
+            size_t toSend = length - total;
+            if (toSend > static_cast<size_t>(std::numeric_limits<int>::max())) {
+                toSend = static_cast<size_t>(std::numeric_limits<int>::max());
+            }
+
+            int sent = sendsocket(
+                descriptor, inBuffer + total, static_cast<int>(toSend), flags
+            );
+
+            if (sent == SOCKET_ERROR) {
+#ifdef _WIN32
+                int err = WSAGetLastError();
+                if (err == WSAEINTR) continue;
+                if (err == WSAEWOULDBLOCK) {
+                    std::this_thread::yield();
+                    continue;
+                }
+#else
+                int err = errno;
+                if (err == EINTR) continue;
+                if (err == EAGAIN || err == EWOULDBLOCK) {
+                    std::this_thread::yield();
+                    continue;
+                }
+                if (err == EPIPE) {
+                    logger.debug() << "peer closed while sending";
+                }
+#endif
+                logger.warning()
+                    << "send failed [" << err << "], closing socket";
+                close();
+                return -1;
+            }
+
+            if (sent == 0) {  // remote closed
+                logger.debug() << "peer closed connection during send";
+                close();
+                return -1;
+            }
+
+            total += static_cast<size_t>(sent);
+        }
+
+        totalUpload += total;
+        return static_cast<int>(total);
     }
+
 
     int available() override {
         std::lock_guard<std::mutex> lock(mutex);

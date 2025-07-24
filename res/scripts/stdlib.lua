@@ -2,6 +2,28 @@
 ------ Extended kit of standard functions ------
 ------------------------------------------------
 
+__VC_STDLIB_VERSION = 4
+debug.log(">>> stdlib loaded, version = "..__VC_STDLIB_VERSION)
+
+-- ========= Coroutine safety helpers =========
+local DEAD_MSG = "cannot resume dead coroutine"
+
+local function is_dead_err(e)
+    return e == "dead"
+        or (type(e) == "string" and e:find(DEAD_MSG, 1, true))
+end
+
+local function resume_safe(co, ...)
+    if coroutine.status(co) == "dead" then
+        return false, "dead"
+    end
+    return coroutine.resume(co, ...)
+end
+
+-- продублируем в _G, чтобы другие окружения не ломали доступ
+_G.is_dead_err = is_dead_err
+_G.resume_safe = resume_safe
+
 function sleep(timesec)
     local start = time.uptime()
     while time.uptime() - start < timesec do
@@ -320,7 +342,7 @@ end
 function _rules.listen(name, handler)
     local rule = _rules.get_rule(name)
     local id = _rules.nexid
-    _rules.nextid = _rules.nexid + 1
+    _rules.nexid = _rules.nexid + 1
     rule.listeners[utf8.encode(id)] = handler
     return id
 end
@@ -351,7 +373,7 @@ end
 
 function _rules.clear()
     _rules.rules = {}
-    _rules.nextid = 1
+    _rules.nexid = 1
 end
 
 function __vc_on_hud_open()
@@ -434,9 +456,16 @@ function __vc_on_world_quit()
     stdcomp.__reset()
 end
 
-local __vc_coroutines = {}
+------------------------------------------------
+-- Coroutine utilities (safe resume/stop)
+------------------------------------------------
+local __vc_coroutines       = {}
 local __vc_named_coroutines = {}
-local __vc_next_coroutine = 1
+local __vc_next_coroutine   = 1
+
+local function _drop_coroutine(tbl, key)
+    tbl[key] = nil
+end
 
 function __vc_start_coroutine(chunk)
     local co = coroutine.create(chunk)
@@ -446,17 +475,24 @@ function __vc_start_coroutine(chunk)
     return id
 end
 
-function __vc_resume_coroutine(id)
+function __vc_resume_coroutine(id, ...)
     local co = __vc_coroutines[id]
-    if co then
-        local success, err = coroutine.resume(co)
-        if not success then
-            debug.error(err)
-            error(err)
+    if not co then return false end
+
+    local ok, res = resume_safe(co, ...)
+    if not ok then
+        if not is_dead_err(res) then
+            debug.error("[co "..id.."] resume error: "..tostring(res))
         end
-        return coroutine.status(co) ~= "dead"
+        _drop_coroutine(__vc_coroutines, id)
+        return false
     end
-    return false
+
+    if coroutine.status(co) == "dead" then
+        _drop_coroutine(__vc_coroutines, id)
+        return false
+    end
+    return true
 end
 
 function __vc_stop_coroutine(id)
@@ -465,14 +501,14 @@ function __vc_stop_coroutine(id)
         if coroutine.close then
             coroutine.close(co)
         end
-        __vc_coroutines[id] = nil
+        _drop_coroutine(__vc_coroutines, id)
     end
 end
 
 function start_coroutine(chunk, name)
     local co = coroutine.create(function()
-        local status, error = xpcall(chunk, function(err)
-            local fullmsg = "error: "..string.match(err, ": (.+)").."\n"..debug.traceback()
+        local ok, err = xpcall(chunk, function(e)
+            local fullmsg = "error: "..tostring(e).."\n"..debug.traceback()
             gui.alert(fullmsg, function()
                 if world.is_open() then
                     __vc_app.close_world()
@@ -484,8 +520,8 @@ function start_coroutine(chunk, name)
             end)
             return fullmsg
         end)
-        if not status then
-            debug.error(error)
+        if not ok then
+            debug.error(err)
         end
     end)
     __vc_named_coroutines[name] = co
@@ -494,24 +530,32 @@ end
 local __post_runnables = {}
 
 function __process_post_runnables()
-    if #__post_runnables then
+    -- post_runnables
+    if #__post_runnables > 0 then
         for _, func in ipairs(__post_runnables) do
-            local status, result = xpcall(func, __vc__error)
-            if not status then
-                debug.error("error in post_runnable: "..result)
+            local ok, result = xpcall(func, __vc__error)
+            if not ok then
+                debug.error("error in post_runnable: "..tostring(result))
             end
         end
         __post_runnables = {}
     end
 
+    -- named coroutines
     local dead = {}
     for name, co in pairs(__vc_named_coroutines) do
-        local success, err = coroutine.resume(co)
-        if not success then
-            debug.error(err)
-        end
         if coroutine.status(co) == "dead" then
             table.insert(dead, name)
+        else
+            local ok, err = resume_safe(co)
+            if not ok then
+                if not is_dead_err(err) then
+                    debug.error("[named co "..name.."] "..tostring(err))
+                end
+                table.insert(dead, name)
+            elseif coroutine.status(co) == "dead" then
+                table.insert(dead, name)
+            end
         end
     end
     for _, name in ipairs(dead) do
